@@ -8,6 +8,9 @@ import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
 import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 
@@ -17,6 +20,8 @@ class MoneyKeyboardService : InputMethodService() {
     private val keyboardState = KeyboardState()
     private val undoRedoManager = UndoRedoManager()
     private lateinit var clipboardHistoryManager: ClipboardHistoryManager
+
+    private var suggestions by mutableStateOf(listOf<String>())
 
     private var lastSpaceTapTime = 0L
     private var lastShiftTapTime = 0L
@@ -45,6 +50,10 @@ class MoneyKeyboardService : InputMethodService() {
                     onCut = { currentInputConnection?.performContextMenuAction(android.R.id.cut) },
                     onPaste = { currentInputConnection?.performContextMenuAction(android.R.id.paste) }
                 )
+                SuggestionBar(
+                    suggestions = suggestions,
+                    onSuggestionTap = ::onSuggestionTap
+                )
                 MoneyKeyboard(
                     state = keyboardState,
                     onKey = ::handleKey,
@@ -59,6 +68,7 @@ class MoneyKeyboardService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         currentEnterAction = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        updateSuggestions()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
 
@@ -95,6 +105,7 @@ class MoneyKeyboardService : InputMethodService() {
                     keyboardState.isShifted = !keyboardState.isShifted
                 }
                 lastShiftTapTime = now
+                return // no text changed, skip suggestion refresh
             }
 
             KeyType.BACKSPACE -> {
@@ -136,8 +147,53 @@ class MoneyKeyboardService : InputMethodService() {
 
             KeyType.SYMBOLS -> {
                 keyboardState.isSymbolsMode = !keyboardState.isSymbolsMode
+                return // no text changed, skip suggestion refresh
             }
         }
+
+        updateSuggestions()
+    }
+
+    private fun onSuggestionTap(word: String) {
+        val ic = currentInputConnection ?: return
+        val currentWord = getCurrentWord(ic)
+
+        if (currentWord.isNotBlank()) {
+            // Completing a word: replace the typed prefix with the full word.
+            val pos = cursorPosition(ic) - currentWord.length
+            ic.deleteSurroundingText(currentWord.length, 0)
+            ic.commitText("$word ", 1)
+            undoRedoManager.recordReplace(pos, currentWord, "$word ")
+        } else {
+            // Next-word prediction: just insert it.
+            val pos = cursorPosition(ic)
+            ic.commitText("$word ", 1)
+            undoRedoManager.recordInsert(pos, "$word ")
+        }
+        keyboardState.isShifted = false
+        updateSuggestions()
+    }
+
+    private fun updateSuggestions() {
+        val ic = currentInputConnection ?: return
+        val currentWord = getCurrentWord(ic)
+        suggestions = if (currentWord.isNotBlank()) {
+            WordSuggester.suggest(currentWord)
+        } else {
+            NextWordPredictor.predict(getLastCompletedWord(ic))
+        }
+    }
+
+    /** The word currently being typed (no trailing space yet), or "" if none. */
+    private fun getCurrentWord(ic: InputConnection): String {
+        val before = ic.getTextBeforeCursor(20, 0)?.toString() ?: ""
+        return Regex("[\\p{L}']+$").find(before)?.value ?: ""
+    }
+
+    /** The most recently finished word (before the trailing space/punctuation). */
+    private fun getLastCompletedWord(ic: InputConnection): String {
+        val before = ic.getTextBeforeCursor(30, 0)?.toString()?.trimEnd() ?: ""
+        return Regex("[\\p{L}']+$").find(before)?.value ?: ""
     }
 
     private fun onSpaceDrag(deltaPx: Float) {
@@ -154,6 +210,7 @@ class MoneyKeyboardService : InputMethodService() {
 
     private fun onSpaceDragEnd() {
         spaceDragAccumulatorPx = 0f
+        updateSuggestions()
     }
 
     private fun moveCursor(direction: Int) {
