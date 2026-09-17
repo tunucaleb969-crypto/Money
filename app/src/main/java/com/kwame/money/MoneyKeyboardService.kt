@@ -178,7 +178,11 @@ class MoneyKeyboardService : InputMethodService() {
         val ic = currentInputConnection ?: return
         val currentWord = getCurrentWord(ic)
         suggestions = if (currentWord.isNotBlank()) {
-            WordSuggester.suggest(currentWord)
+            // Personal dictionary words take priority over the built-in list.
+            val personal = Prefs.getDictionaryWords(applicationContext).filter {
+                it.startsWith(currentWord, ignoreCase = true) && !it.equals(currentWord, ignoreCase = true)
+            }
+            (personal + WordSuggester.suggest(currentWord)).distinct().take(3)
         } else {
             NextWordPredictor.predict(getLastCompletedWord(ic))
         }
