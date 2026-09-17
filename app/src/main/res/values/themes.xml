@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.Money" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorPrimary">#2E2E3E</item>
+        <item name="colorPrimaryDark">#1E1E2E</item>
+        <item name="colorAccent">#4CAF50</item>
+    </style>
+</resources>
