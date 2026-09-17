@@ -2,6 +2,7 @@ package com.kwame.money
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,12 +15,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 
 @Composable
 fun MoneyKeyboard(
     state: KeyboardState,
-    onKey: (KeyData) -> Unit
+    onKey: (KeyData) -> Unit,
+    onSpaceDrag: (Float) -> Unit = {},
+    onSpaceDragEnd: () -> Unit = {}
 ) {
     val rows = if (state.isSymbolsMode) KeyboardLayouts.symbolRows else KeyboardLayouts.qwertyRows
 
@@ -35,7 +39,7 @@ fun MoneyKeyboard(
                 horizontalArrangement = Arrangement.Center
             ) {
                 row.forEach { key ->
-                    KeyButton(key = key, state = state, onKey = onKey)
+                    KeyButton(key = key, state = state, onKey = onKey, onSpaceDrag = onSpaceDrag, onSpaceDragEnd = onSpaceDragEnd)
                 }
             }
         }
@@ -52,6 +56,8 @@ fun MoneyKeyboard(
                 key = KeyData(" ", keyType = KeyType.SPACE),
                 state = state,
                 onKey = onKey,
+                onSpaceDrag = onSpaceDrag,
+                onSpaceDragEnd = onSpaceDragEnd,
                 weight = 4f
             )
             KeyButton(
@@ -68,6 +74,8 @@ private fun RowScope.KeyButton(
     key: KeyData,
     state: KeyboardState,
     onKey: (KeyData) -> Unit,
+    onSpaceDrag: (Float) -> Unit = {},
+    onSpaceDragEnd: () -> Unit = {},
     weight: Float = 1f
 ) {
     val displayLabel = when (key.keyType) {
@@ -79,11 +87,24 @@ private fun RowScope.KeyButton(
         KeyType.SYMBOLS -> key.label
     }
 
+    val dragModifier = if (key.keyType == KeyType.SPACE) {
+        Modifier.pointerInput(Unit) {
+            detectHorizontalDragGestures(
+                onDragEnd = { onSpaceDragEnd() },
+                onDragCancel = { onSpaceDragEnd() }
+            ) { change, dragAmount ->
+                change.consume()
+                onSpaceDrag(dragAmount)
+            }
+        }
+    } else Modifier
+
     Box(
         modifier = Modifier
             .weight(weight)
             .padding(2.dp)
             .background(Color(0xFF2E2E3E))
+            .then(dragModifier)
             .clickable { onKey(key) }
             .padding(vertical = 14.dp),
         contentAlignment = Alignment.Center
