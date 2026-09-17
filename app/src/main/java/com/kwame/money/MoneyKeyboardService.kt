@@ -6,6 +6,8 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
+import android.view.inputmethod.InputConnection
+import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 
@@ -13,6 +15,8 @@ class MoneyKeyboardService : InputMethodService() {
 
     private val lifecycleOwner = KeyboardLifecycleOwner()
     private val keyboardState = KeyboardState()
+    private val undoRedoManager = UndoRedoManager()
+    private lateinit var clipboardHistoryManager: ClipboardHistoryManager
 
     private var lastSpaceTapTime = 0L
     private var lastShiftTapTime = 0L
@@ -23,6 +27,8 @@ class MoneyKeyboardService : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
+        clipboardHistoryManager = ClipboardHistoryManager(applicationContext)
+        clipboardHistoryManager.startListening()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
     }
 
@@ -30,12 +36,22 @@ class MoneyKeyboardService : InputMethodService() {
         val composeView = ComposeView(this)
         lifecycleOwner.attachToView(composeView)
         composeView.setContent {
-            MoneyKeyboard(
-                state = keyboardState,
-                onKey = ::handleKey,
-                onSpaceDrag = ::onSpaceDrag,
-                onSpaceDragEnd = ::onSpaceDragEnd
-            )
+            Column {
+                EditToolbar(
+                    onUndo = { currentInputConnection?.let { undoRedoManager.undo(it) } },
+                    onRedo = { currentInputConnection?.let { undoRedoManager.redo(it) } },
+                    onSelectAll = { currentInputConnection?.performContextMenuAction(android.R.id.selectAll) },
+                    onCopy = { currentInputConnection?.performContextMenuAction(android.R.id.copy) },
+                    onCut = { currentInputConnection?.performContextMenuAction(android.R.id.cut) },
+                    onPaste = { currentInputConnection?.performContextMenuAction(android.R.id.paste) }
+                )
+                MoneyKeyboard(
+                    state = keyboardState,
+                    onKey = ::handleKey,
+                    onSpaceDrag = ::onSpaceDrag,
+                    onSpaceDragEnd = ::onSpaceDragEnd
+                )
+            }
         }
         return composeView
     }
@@ -52,6 +68,7 @@ class MoneyKeyboardService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        clipboardHistoryManager.stopListening()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         super.onDestroy()
     }
@@ -62,7 +79,9 @@ class MoneyKeyboardService : InputMethodService() {
         when (key.keyType) {
             KeyType.CHARACTER -> {
                 val text = if (keyboardState.isShifted) key.capsLabel else key.label
+                val pos = cursorPosition(ic)
                 ic.commitText(text, 1)
+                undoRedoManager.recordInsert(pos, text)
                 keyboardState.onLetterCommitted()
             }
 
@@ -79,18 +98,27 @@ class MoneyKeyboardService : InputMethodService() {
             }
 
             KeyType.BACKSPACE -> {
-                ic.deleteSurroundingText(1, 0)
+                val deleted = ic.getTextBeforeCursor(1, 0)?.toString()
+                if (!deleted.isNullOrEmpty()) {
+                    val pos = cursorPosition(ic) - deleted.length
+                    ic.deleteSurroundingText(1, 0)
+                    undoRedoManager.recordDelete(pos, deleted)
+                }
             }
 
             KeyType.SPACE -> {
                 val now = SystemClock.elapsedRealtime()
                 if (now - lastSpaceTapTime < 300) {
                     // Double-tap space: replace the space just typed with ". "
+                    val pos = cursorPosition(ic) - 1
                     ic.deleteSurroundingText(1, 0)
                     ic.commitText(". ", 1)
+                    undoRedoManager.recordReplace(pos, " ", ". ")
                     keyboardState.isShifted = true
                 } else {
+                    val pos = cursorPosition(ic)
                     ic.commitText(" ", 1)
+                    undoRedoManager.recordInsert(pos, " ")
                 }
                 lastSpaceTapTime = now
             }
@@ -112,11 +140,6 @@ class MoneyKeyboardService : InputMethodService() {
         }
     }
 
-    /**
-     * Ported from the previous keyboard app: dragging on the spacebar moves the
-     * text cursor instead of inserting spaces. This is NOT glide/gesture typing
-     * (that was never built in the old app either, and stays out of scope).
-     */
     private fun onSpaceDrag(deltaPx: Float) {
         spaceDragAccumulatorPx += deltaPx
         while (spaceDragAccumulatorPx >= dragStepThresholdPx) {
@@ -135,9 +158,13 @@ class MoneyKeyboardService : InputMethodService() {
 
     private fun moveCursor(direction: Int) {
         val ic = currentInputConnection ?: return
-        val extractedText = ic.getExtractedText(ExtractedTextRequest(), 0) ?: return
-        val currentPos = extractedText.selectionStart
-        val newPos = (currentPos + direction).coerceAtLeast(0)
+        val pos = cursorPosition(ic)
+        val newPos = (pos + direction).coerceAtLeast(0)
         ic.setSelection(newPos, newPos)
+    }
+
+    private fun cursorPosition(ic: InputConnection): Int {
+        val extractedText = ic.getExtractedText(ExtractedTextRequest(), 0) ?: return 0
+        return extractedText.selectionStart
     }
 }
