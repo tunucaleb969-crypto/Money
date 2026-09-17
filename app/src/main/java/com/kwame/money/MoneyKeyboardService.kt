@@ -5,6 +5,7 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.ExtractedTextRequest
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 
@@ -17,6 +18,9 @@ class MoneyKeyboardService : InputMethodService() {
     private var lastShiftTapTime = 0L
     private var currentEnterAction = EditorInfo.IME_ACTION_NONE
 
+    private var spaceDragAccumulatorPx = 0f
+    private val dragStepThresholdPx = 40f
+
     override fun onCreate() {
         super.onCreate()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
@@ -26,7 +30,12 @@ class MoneyKeyboardService : InputMethodService() {
         val composeView = ComposeView(this)
         lifecycleOwner.attachToView(composeView)
         composeView.setContent {
-            MoneyKeyboard(state = keyboardState, onKey = ::handleKey)
+            MoneyKeyboard(
+                state = keyboardState,
+                onKey = ::handleKey,
+                onSpaceDrag = ::onSpaceDrag,
+                onSpaceDragEnd = ::onSpaceDragEnd
+            )
         }
         return composeView
     }
@@ -101,5 +110,34 @@ class MoneyKeyboardService : InputMethodService() {
                 keyboardState.isSymbolsMode = !keyboardState.isSymbolsMode
             }
         }
+    }
+
+    /**
+     * Ported from the previous keyboard app: dragging on the spacebar moves the
+     * text cursor instead of inserting spaces. This is NOT glide/gesture typing
+     * (that was never built in the old app either, and stays out of scope).
+     */
+    private fun onSpaceDrag(deltaPx: Float) {
+        spaceDragAccumulatorPx += deltaPx
+        while (spaceDragAccumulatorPx >= dragStepThresholdPx) {
+            moveCursor(1)
+            spaceDragAccumulatorPx -= dragStepThresholdPx
+        }
+        while (spaceDragAccumulatorPx <= -dragStepThresholdPx) {
+            moveCursor(-1)
+            spaceDragAccumulatorPx += dragStepThresholdPx
+        }
+    }
+
+    private fun onSpaceDragEnd() {
+        spaceDragAccumulatorPx = 0f
+    }
+
+    private fun moveCursor(direction: Int) {
+        val ic = currentInputConnection ?: return
+        val extractedText = ic.getExtractedText(ExtractedTextRequest(), 0) ?: return
+        val currentPos = extractedText.selectionStart
+        val newPos = (currentPos + direction).coerceAtLeast(0)
+        ic.setSelection(newPos, newPos)
     }
 }
