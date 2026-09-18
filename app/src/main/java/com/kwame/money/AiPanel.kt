@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
  * Shows the current AI action state. Deliberately never replaces the user's
@@ -87,7 +88,7 @@ private fun ActionChip(label: String, onClick: () -> Unit) {
     Text(
         text = label,
         color = Color.White,
-        fontSize = androidx.compose.ui.unit.TextUnit.Unspecified.let { androidx.compose.ui.unit.sp(12) },
+        fontSize = 12.sp,
         modifier = Modifier
             .background(Color(0xFF3A3A4A))
             .clickable { onClick() }
