@@ -53,12 +53,17 @@ fun MoneyKeyboard(
                 onKey = onKey
             )
             KeyButton(
+                key = KeyData("\uD83D\uDE0A", keyType = KeyType.EMOJI_TOGGLE),
+                state = state,
+                onKey = onKey
+            )
+            KeyButton(
                 key = KeyData(" ", keyType = KeyType.SPACE),
                 state = state,
                 onKey = onKey,
                 onSpaceDrag = onSpaceDrag,
                 onSpaceDragEnd = onSpaceDragEnd,
-                weight = 4f
+                weight = 3f
             )
             KeyButton(
                 key = KeyData("enter", keyType = KeyType.ENTER),
@@ -85,6 +90,7 @@ private fun RowScope.KeyButton(
         KeyType.SPACE -> ""
         KeyType.ENTER -> "\u23ce"
         KeyType.SYMBOLS -> key.label
+        KeyType.EMOJI_TOGGLE -> key.label
     }
 
     val dragModifier = if (key.keyType == KeyType.SPACE) {
