@@ -13,5 +13,6 @@ enum class KeyType {
     SPACE,
     ENTER,
     SYMBOLS,
-    EMOJI_TOGGLE
+    EMOJI_TOGGLE,
+    AI_TOGGLE
 }
