@@ -2,6 +2,7 @@ package com.kwame.money
 
 import android.inputmethodservice.InputMethodService
 import android.os.SystemClock
+import android.text.InputType
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
@@ -101,6 +102,7 @@ class MoneyKeyboardService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         currentEnterAction = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        keyboardState.isSensitiveField = computeIsSensitiveField(info)
         keyboardState.isEmojiPanelOpen = false
         keyboardState.isAiPanelOpen = false
         aiPanelState = AiPanelState.Idle
@@ -118,6 +120,26 @@ class MoneyKeyboardService : InputMethodService() {
         serviceScope.cancel()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         super.onDestroy()
+    }
+
+    /**
+     * True for password/PIN fields, or any field that explicitly asks not to
+     * be personalized/learned from. When true, AI actions and word
+     * suggestions/learning are fully disabled for that field — not just
+     * hidden, actually never invoked — matching the privacy plan agreed on
+     * when we reviewed the master spec.
+     */
+    private fun computeIsSensitiveField(info: EditorInfo?): Boolean {
+        val inputType = info?.inputType ?: 0
+        val variation = inputType and InputType.TYPE_MASK_VARIATION
+        val cls = inputType and InputType.TYPE_MASK_CLASS
+        val isPasswordVariation = variation == InputType.TYPE_TEXT_VARIATION_PASSWORD ||
+            variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD ||
+            variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD ||
+            (cls == InputType.TYPE_CLASS_NUMBER && variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD)
+        val noLearningFlag =
+            ((info?.imeOptions ?: 0) and EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING) != 0
+        return isPasswordVariation || noLearningFlag
     }
 
     private fun handleKey(key: KeyData) {
@@ -193,6 +215,7 @@ class MoneyKeyboardService : InputMethodService() {
             }
 
             KeyType.AI_TOGGLE -> {
+                if (keyboardState.isSensitiveField) return // AI disabled entirely in secure fields
                 keyboardState.isAiPanelOpen = !keyboardState.isAiPanelOpen
                 if (keyboardState.isAiPanelOpen) aiPanelState = AiPanelState.Idle
                 return // no text changed, skip suggestion refresh
@@ -205,6 +228,7 @@ class MoneyKeyboardService : InputMethodService() {
     // ---- AI actions ----
 
     private fun onAiAction(type: AiActionType) {
+        if (keyboardState.isSensitiveField) return // defense in depth
         val ic = currentInputConnection ?: return
         val fullText = getFullText(ic)
         if (fullText.isBlank()) {
@@ -316,6 +340,10 @@ class MoneyKeyboardService : InputMethodService() {
     }
 
     private fun updateSuggestions() {
+        if (keyboardState.isSensitiveField) {
+            suggestions = emptyList()
+            return
+        }
         val ic = currentInputConnection ?: return
         val currentWord = getCurrentWord(ic)
         suggestions = if (currentWord.isNotBlank()) {
