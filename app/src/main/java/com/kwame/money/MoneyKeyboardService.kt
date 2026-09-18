@@ -8,6 +8,9 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,6 +22,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+
+private enum class KeyboardPanel { KEYBOARD, EMOJI, AI }
 
 class MoneyKeyboardService : InputMethodService() {
 
@@ -64,34 +69,48 @@ class MoneyKeyboardService : InputMethodService() {
                     onPaste = { currentInputConnection?.performContextMenuAction(android.R.id.paste) }
                 )
 
-                when {
-                    keyboardState.isEmojiPanelOpen -> {
-                        EmojiPanel(
-                            recentEmojis = recentEmojis,
-                            onEmojiTap = ::onEmojiTap,
-                            onClose = { keyboardState.isEmojiPanelOpen = false }
-                        )
-                    }
-                    keyboardState.isAiPanelOpen -> {
-                        AiPanel(
-                            state = aiPanelState,
-                            onAction = ::onAiAction,
-                            onInsert = ::onAiInsert,
-                            onRegenerate = ::onAiRegenerate,
-                            onDismiss = ::onAiDismiss
-                        )
-                    }
-                    else -> {
-                        SuggestionBar(
-                            suggestions = suggestions,
-                            onSuggestionTap = ::onSuggestionTap
-                        )
-                        MoneyKeyboard(
-                            state = keyboardState,
-                            onKey = ::handleKey,
-                            onSpaceDrag = ::onSpaceDrag,
-                            onSpaceDragEnd = ::onSpaceDragEnd
-                        )
+                val panel = when {
+                    keyboardState.isEmojiPanelOpen -> KeyboardPanel.EMOJI
+                    keyboardState.isAiPanelOpen -> KeyboardPanel.AI
+                    else -> KeyboardPanel.KEYBOARD
+                }
+
+                AnimatedContent(
+                    targetState = panel,
+                    transitionSpec = { fadeIn() togetherWith fadeOut() },
+                    label = "keyboardPanelSwitch"
+                ) { targetPanel ->
+                    when (targetPanel) {
+                        KeyboardPanel.EMOJI -> {
+                            EmojiPanel(
+                                recentEmojis = recentEmojis,
+                                onEmojiTap = ::onEmojiTap,
+                                onClose = { keyboardState.isEmojiPanelOpen = false }
+                            )
+                        }
+                        KeyboardPanel.AI -> {
+                            AiPanel(
+                                state = aiPanelState,
+                                onAction = ::onAiAction,
+                                onInsert = ::onAiInsert,
+                                onRegenerate = ::onAiRegenerate,
+                                onDismiss = ::onAiDismiss
+                            )
+                        }
+                        KeyboardPanel.KEYBOARD -> {
+                            Column {
+                                SuggestionBar(
+                                    suggestions = suggestions,
+                                    onSuggestionTap = ::onSuggestionTap
+                                )
+                                MoneyKeyboard(
+                                    state = keyboardState,
+                                    onKey = ::handleKey,
+                                    onSpaceDrag = ::onSpaceDrag,
+                                    onSpaceDragEnd = ::onSpaceDragEnd
+                                )
+                            }
+                        }
                     }
                 }
             }
