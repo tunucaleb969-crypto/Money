@@ -22,6 +22,7 @@ class MoneyKeyboardService : InputMethodService() {
     private lateinit var clipboardHistoryManager: ClipboardHistoryManager
 
     private var suggestions by mutableStateOf(listOf<String>())
+    private var recentEmojis by mutableStateOf(listOf<String>())
 
     private var lastSpaceTapTime = 0L
     private var lastShiftTapTime = 0L
@@ -34,6 +35,7 @@ class MoneyKeyboardService : InputMethodService() {
         super.onCreate()
         clipboardHistoryManager = ClipboardHistoryManager(applicationContext)
         clipboardHistoryManager.startListening()
+        recentEmojis = Prefs.getRecentEmojis(applicationContext)
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
     }
 
@@ -50,16 +52,25 @@ class MoneyKeyboardService : InputMethodService() {
                     onCut = { currentInputConnection?.performContextMenuAction(android.R.id.cut) },
                     onPaste = { currentInputConnection?.performContextMenuAction(android.R.id.paste) }
                 )
-                SuggestionBar(
-                    suggestions = suggestions,
-                    onSuggestionTap = ::onSuggestionTap
-                )
-                MoneyKeyboard(
-                    state = keyboardState,
-                    onKey = ::handleKey,
-                    onSpaceDrag = ::onSpaceDrag,
-                    onSpaceDragEnd = ::onSpaceDragEnd
-                )
+
+                if (keyboardState.isEmojiPanelOpen) {
+                    EmojiPanel(
+                        recentEmojis = recentEmojis,
+                        onEmojiTap = ::onEmojiTap,
+                        onClose = { keyboardState.isEmojiPanelOpen = false }
+                    )
+                } else {
+                    SuggestionBar(
+                        suggestions = suggestions,
+                        onSuggestionTap = ::onSuggestionTap
+                    )
+                    MoneyKeyboard(
+                        state = keyboardState,
+                        onKey = ::handleKey,
+                        onSpaceDrag = ::onSpaceDrag,
+                        onSpaceDragEnd = ::onSpaceDragEnd
+                    )
+                }
             }
         }
         return composeView
@@ -68,6 +79,7 @@ class MoneyKeyboardService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         currentEnterAction = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
+        keyboardState.isEmojiPanelOpen = false
         updateSuggestions()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
@@ -149,9 +161,23 @@ class MoneyKeyboardService : InputMethodService() {
                 keyboardState.isSymbolsMode = !keyboardState.isSymbolsMode
                 return // no text changed, skip suggestion refresh
             }
+
+            KeyType.EMOJI_TOGGLE -> {
+                keyboardState.isEmojiPanelOpen = !keyboardState.isEmojiPanelOpen
+                return // no text changed, skip suggestion refresh
+            }
         }
 
         updateSuggestions()
+    }
+
+    private fun onEmojiTap(emoji: String) {
+        val ic = currentInputConnection ?: return
+        val pos = cursorPosition(ic)
+        ic.commitText(emoji, 1)
+        undoRedoManager.recordInsert(pos, emoji)
+        Prefs.addRecentEmoji(applicationContext, emoji)
+        recentEmojis = Prefs.getRecentEmojis(applicationContext)
     }
 
     private fun onSuggestionTap(word: String) {
@@ -165,7 +191,7 @@ class MoneyKeyboardService : InputMethodService() {
             ic.commitText("$word ", 1)
             undoRedoManager.recordReplace(pos, currentWord, "$word ")
         } else {
-            // Next-word prediction: just insert it.
+            // Next-word prediction or emoji suggestion: just insert it.
             val pos = cursorPosition(ic)
             ic.commitText("$word ", 1)
             undoRedoManager.recordInsert(pos, "$word ")
@@ -184,7 +210,10 @@ class MoneyKeyboardService : InputMethodService() {
             }
             (personal + WordSuggester.suggest(currentWord)).distinct().take(3)
         } else {
-            NextWordPredictor.predict(getLastCompletedWord(ic))
+            val lastWord = getLastCompletedWord(ic)
+            val nextWords = NextWordPredictor.predict(lastWord)
+            val emoji = EmojiSuggester.suggestForWord(lastWord)
+            if (emoji != null) (nextWords + emoji).distinct().take(3) else nextWords
         }
     }
 
