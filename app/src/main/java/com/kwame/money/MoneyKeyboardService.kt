@@ -28,6 +28,7 @@ class MoneyKeyboardService : InputMethodService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var aiPanelState by mutableStateOf<AiPanelState>(AiPanelState.Idle)
+    private var lastAiActionType: AiActionType = AiActionType.FIX_GRAMMAR
     private var lastAiSourceText: String = ""
 
     private var suggestions by mutableStateOf(listOf<String>())
@@ -73,7 +74,7 @@ class MoneyKeyboardService : InputMethodService() {
                     keyboardState.isAiPanelOpen -> {
                         AiPanel(
                             state = aiPanelState,
-                            onFixGrammar = ::onFixGrammar,
+                            onAction = ::onAiAction,
                             onInsert = ::onAiInsert,
                             onRegenerate = ::onAiRegenerate,
                             onDismiss = ::onAiDismiss
@@ -203,26 +204,28 @@ class MoneyKeyboardService : InputMethodService() {
 
     // ---- AI actions ----
 
-    private fun onFixGrammar() {
+    private fun onAiAction(type: AiActionType) {
         val ic = currentInputConnection ?: return
         val fullText = getFullText(ic)
         if (fullText.isBlank()) {
-            aiPanelState = AiPanelState.Failed("There's no text to fix yet.")
+            aiPanelState = AiPanelState.Failed("There's no text to work with yet.")
             return
         }
+        lastAiActionType = type
         lastAiSourceText = fullText
-        runAiAction(AiActionType.FIX_GRAMMAR, fullText)
+        runAiAction(type, fullText)
     }
 
     private fun onAiRegenerate() {
         if (lastAiSourceText.isNotBlank()) {
-            runAiAction(AiActionType.FIX_GRAMMAR, lastAiSourceText)
+            runAiAction(lastAiActionType, lastAiSourceText)
         }
     }
 
     private fun runAiAction(type: AiActionType, sourceText: String) {
         aiPanelState = AiPanelState.Loading
-        val (systemPrompt, wrappedText) = AiActions.buildPrompt(type, sourceText)
+        val targetLanguage = if (type == AiActionType.TRANSLATE) "Twi" else null
+        val (systemPrompt, wrappedText) = AiActions.buildPrompt(type, sourceText, targetLanguage)
         val provider: AiProvider = GeminiProvider(Prefs.getApiKey(applicationContext))
         serviceScope.launch {
             val result = provider.generate(systemPrompt, wrappedText)
@@ -238,9 +241,17 @@ class MoneyKeyboardService : InputMethodService() {
         val oldText = lastAiSourceText
         // Replace the whole field's text with the AI result, bypassing the
         // normal per-key path so autocorrect can't immediately mangle it.
-        ic.setSelection(0, oldText.length)
-        ic.commitText(resultText, 1)
-        undoRedoManager.recordReplace(0, oldText, resultText)
+        // Reply-suggestion is different: it's a suggested response, not an edit
+        // of the existing text, so it's appended instead of replacing anything.
+        if (lastAiActionType == AiActionType.REPLY_SUGGESTION) {
+            val pos = cursorPosition(ic)
+            ic.commitText(resultText, 1)
+            undoRedoManager.recordInsert(pos, resultText)
+        } else {
+            ic.setSelection(0, oldText.length)
+            ic.commitText(resultText, 1)
+            undoRedoManager.recordReplace(0, oldText, resultText)
+        }
 
         keyboardState.isAiPanelOpen = false
         aiPanelState = AiPanelState.Idle
