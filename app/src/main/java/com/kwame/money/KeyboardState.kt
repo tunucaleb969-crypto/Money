@@ -15,6 +15,10 @@ class KeyboardState {
     var isEmojiPanelOpen by mutableStateOf(false)
     var isAiPanelOpen by mutableStateOf(false)
 
+    /** True for password/PIN fields or fields that request no personalized
+     * learning. When true: no AI actions, no word suggestions, no learning. */
+    var isSensitiveField by mutableStateOf(false)
+
     /** One-shot shift resets after a single letter; caps lock stays on. */
     fun onLetterCommitted() {
         if (isShifted && !isCapsLocked) {
