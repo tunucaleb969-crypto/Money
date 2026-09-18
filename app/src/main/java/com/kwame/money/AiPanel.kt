@@ -20,7 +20,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun AiPanel(
     state: AiPanelState,
-    onFixGrammar: () -> Unit,
+    onAction: (AiActionType) -> Unit,
     onInsert: (String) -> Unit,
     onRegenerate: () -> Unit,
     onDismiss: () -> Unit
@@ -33,8 +33,19 @@ fun AiPanel(
     ) {
         when (state) {
             is AiPanelState.Idle -> {
-                Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
-                    ActionChip("Fix Grammar", onFixGrammar)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    ActionChip("Fix Grammar") { onAction(AiActionType.FIX_GRAMMAR) }
+                    ActionChip("Formal") { onAction(AiActionType.REWRITE_FORMAL) }
+                    ActionChip("Casual") { onAction(AiActionType.REWRITE_CASUAL) }
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                ) {
+                    ActionChip("Shorten") { onAction(AiActionType.SHORTEN) }
+                    ActionChip("Expand") { onAction(AiActionType.EXPAND) }
+                    ActionChip("Translate \u2192 Twi") { onAction(AiActionType.TRANSLATE) }
+                    ActionChip("Suggest Reply") { onAction(AiActionType.REPLY_SUGGESTION) }
                 }
             }
 
@@ -76,9 +87,10 @@ private fun ActionChip(label: String, onClick: () -> Unit) {
     Text(
         text = label,
         color = Color.White,
+        fontSize = androidx.compose.ui.unit.TextUnit.Unspecified.let { androidx.compose.ui.unit.sp(12) },
         modifier = Modifier
             .background(Color(0xFF3A3A4A))
             .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
     )
 }
