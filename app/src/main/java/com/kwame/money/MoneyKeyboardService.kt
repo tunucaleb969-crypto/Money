@@ -213,22 +213,38 @@ class MoneyKeyboardService : InputMethodService() {
         }
         lastAiActionType = type
         lastAiSourceText = fullText
-        runAiAction(type, fullText)
+        runAiAction(type, fullText, forceFresh = false)
     }
 
     private fun onAiRegenerate() {
         if (lastAiSourceText.isNotBlank()) {
-            runAiAction(lastAiActionType, lastAiSourceText)
+            runAiAction(lastAiActionType, lastAiSourceText, forceFresh = true)
         }
     }
 
-    private fun runAiAction(type: AiActionType, sourceText: String) {
+    private fun runAiAction(type: AiActionType, sourceText: String, forceFresh: Boolean) {
+        if (!forceFresh) {
+            val cached = AiResponseCache.get(type, sourceText)
+            if (cached != null) {
+                aiPanelState = AiPanelState.Ready(cached)
+                return
+            }
+        }
+
+        if (!NetworkUtils.isOnline(applicationContext)) {
+            aiPanelState = AiPanelState.Failed(
+                "No internet connection. AI actions need Gemini online \u2014 typing, suggestions, and emoji still work fine offline."
+            )
+            return
+        }
+
         aiPanelState = AiPanelState.Loading
         val targetLanguage = if (type == AiActionType.TRANSLATE) "Twi" else null
         val (systemPrompt, wrappedText) = AiActions.buildPrompt(type, sourceText, targetLanguage)
         val provider: AiProvider = GeminiProvider(Prefs.getApiKey(applicationContext))
         serviceScope.launch {
             val result = provider.generate(systemPrompt, wrappedText)
+            result.onSuccess { AiResponseCache.put(type, sourceText, it) }
             aiPanelState = result.fold(
                 onSuccess = { AiPanelState.Ready(it) },
                 onFailure = { AiPanelState.Failed(it.message ?: "Unknown error") }
