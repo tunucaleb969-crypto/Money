@@ -13,6 +13,7 @@ class KeyboardState {
     var isCapsLocked by mutableStateOf(false)
     var isSymbolsMode by mutableStateOf(false)
     var isEmojiPanelOpen by mutableStateOf(false)
+    var isAiPanelOpen by mutableStateOf(false)
 
     /** One-shot shift resets after a single letter; caps lock stays on. */
     fun onLetterCommitted() {
