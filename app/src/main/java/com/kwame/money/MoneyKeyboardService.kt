@@ -13,6 +13,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class MoneyKeyboardService : InputMethodService() {
 
@@ -20,6 +25,10 @@ class MoneyKeyboardService : InputMethodService() {
     private val keyboardState = KeyboardState()
     private val undoRedoManager = UndoRedoManager()
     private lateinit var clipboardHistoryManager: ClipboardHistoryManager
+
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var aiPanelState by mutableStateOf<AiPanelState>(AiPanelState.Idle)
+    private var lastAiSourceText: String = ""
 
     private var suggestions by mutableStateOf(listOf<String>())
     private var recentEmojis by mutableStateOf(listOf<String>())
@@ -53,23 +62,35 @@ class MoneyKeyboardService : InputMethodService() {
                     onPaste = { currentInputConnection?.performContextMenuAction(android.R.id.paste) }
                 )
 
-                if (keyboardState.isEmojiPanelOpen) {
-                    EmojiPanel(
-                        recentEmojis = recentEmojis,
-                        onEmojiTap = ::onEmojiTap,
-                        onClose = { keyboardState.isEmojiPanelOpen = false }
-                    )
-                } else {
-                    SuggestionBar(
-                        suggestions = suggestions,
-                        onSuggestionTap = ::onSuggestionTap
-                    )
-                    MoneyKeyboard(
-                        state = keyboardState,
-                        onKey = ::handleKey,
-                        onSpaceDrag = ::onSpaceDrag,
-                        onSpaceDragEnd = ::onSpaceDragEnd
-                    )
+                when {
+                    keyboardState.isEmojiPanelOpen -> {
+                        EmojiPanel(
+                            recentEmojis = recentEmojis,
+                            onEmojiTap = ::onEmojiTap,
+                            onClose = { keyboardState.isEmojiPanelOpen = false }
+                        )
+                    }
+                    keyboardState.isAiPanelOpen -> {
+                        AiPanel(
+                            state = aiPanelState,
+                            onFixGrammar = ::onFixGrammar,
+                            onInsert = ::onAiInsert,
+                            onRegenerate = ::onAiRegenerate,
+                            onDismiss = ::onAiDismiss
+                        )
+                    }
+                    else -> {
+                        SuggestionBar(
+                            suggestions = suggestions,
+                            onSuggestionTap = ::onSuggestionTap
+                        )
+                        MoneyKeyboard(
+                            state = keyboardState,
+                            onKey = ::handleKey,
+                            onSpaceDrag = ::onSpaceDrag,
+                            onSpaceDragEnd = ::onSpaceDragEnd
+                        )
+                    }
                 }
             }
         }
@@ -80,6 +101,8 @@ class MoneyKeyboardService : InputMethodService() {
         super.onStartInputView(info, restarting)
         currentEnterAction = (info?.imeOptions ?: 0) and EditorInfo.IME_MASK_ACTION
         keyboardState.isEmojiPanelOpen = false
+        keyboardState.isAiPanelOpen = false
+        aiPanelState = AiPanelState.Idle
         updateSuggestions()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
@@ -91,6 +114,7 @@ class MoneyKeyboardService : InputMethodService() {
 
     override fun onDestroy() {
         clipboardHistoryManager.stopListening()
+        serviceScope.cancel()
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         super.onDestroy()
     }
@@ -166,10 +190,74 @@ class MoneyKeyboardService : InputMethodService() {
                 keyboardState.isEmojiPanelOpen = !keyboardState.isEmojiPanelOpen
                 return // no text changed, skip suggestion refresh
             }
+
+            KeyType.AI_TOGGLE -> {
+                keyboardState.isAiPanelOpen = !keyboardState.isAiPanelOpen
+                if (keyboardState.isAiPanelOpen) aiPanelState = AiPanelState.Idle
+                return // no text changed, skip suggestion refresh
+            }
         }
 
         updateSuggestions()
     }
+
+    // ---- AI actions ----
+
+    private fun onFixGrammar() {
+        val ic = currentInputConnection ?: return
+        val fullText = getFullText(ic)
+        if (fullText.isBlank()) {
+            aiPanelState = AiPanelState.Failed("There's no text to fix yet.")
+            return
+        }
+        lastAiSourceText = fullText
+        runAiAction(AiActionType.FIX_GRAMMAR, fullText)
+    }
+
+    private fun onAiRegenerate() {
+        if (lastAiSourceText.isNotBlank()) {
+            runAiAction(AiActionType.FIX_GRAMMAR, lastAiSourceText)
+        }
+    }
+
+    private fun runAiAction(type: AiActionType, sourceText: String) {
+        aiPanelState = AiPanelState.Loading
+        val (systemPrompt, wrappedText) = AiActions.buildPrompt(type, sourceText)
+        val provider: AiProvider = GeminiProvider(Prefs.getApiKey(applicationContext))
+        serviceScope.launch {
+            val result = provider.generate(systemPrompt, wrappedText)
+            aiPanelState = result.fold(
+                onSuccess = { AiPanelState.Ready(it) },
+                onFailure = { AiPanelState.Failed(it.message ?: "Unknown error") }
+            )
+        }
+    }
+
+    private fun onAiInsert(resultText: String) {
+        val ic = currentInputConnection ?: return
+        val oldText = lastAiSourceText
+        // Replace the whole field's text with the AI result, bypassing the
+        // normal per-key path so autocorrect can't immediately mangle it.
+        ic.setSelection(0, oldText.length)
+        ic.commitText(resultText, 1)
+        undoRedoManager.recordReplace(0, oldText, resultText)
+
+        keyboardState.isAiPanelOpen = false
+        aiPanelState = AiPanelState.Idle
+        updateSuggestions()
+    }
+
+    private fun onAiDismiss() {
+        aiPanelState = AiPanelState.Idle
+        keyboardState.isAiPanelOpen = false
+    }
+
+    private fun getFullText(ic: InputConnection): String {
+        val request = ExtractedTextRequest().apply { hintMaxChars = 10000 }
+        return ic.getExtractedText(request, 0)?.text?.toString() ?: ""
+    }
+
+    // ---- Emoji / suggestions ----
 
     private fun onEmojiTap(emoji: String) {
         val ic = currentInputConnection ?: return
