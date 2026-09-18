@@ -1,6 +1,2 @@
-package com.kwame.money
-
-import android.content.Context
-import android.content.Intent
-import android.provider.Settings
-import androidx.compose.foundation.клик
+// This file is unused — safe to delete manually from GitHub.
+// (Created accidentally during Phase 6; Zapier's GitHub connection can't delete files.)
