@@ -1,45 +1,46 @@
 package com.kwame.money
 
+import android.graphics.Color
 import android.inputmethodservice.InputMethodService
 import android.os.SystemClock
 import android.text.InputType
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.ExtractedTextRequest
 import android.view.inputmethod.InputConnection
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.layout.Column
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.ComposeView
-import androidx.lifecycle.Lifecycle
+import android.widget.LinearLayout
+import android.widget.TextView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-private enum class KeyboardPanel { KEYBOARD, EMOJI, AI }
-
+/**
+ * Rebuilt without Compose. Compose inside InputMethodService needed manual
+ * Lifecycle/ViewModelStore/SavedState owner plumbing (KeyboardLifecycleOwner)
+ * that kept causing crashes with no way to get a stack trace on-device.
+ * Plain Android Views need none of that — same approach the old AI Keyboard
+ * app used successfully. AI panel and emoji panel are temporarily disabled
+ * (their toggle keys are no-ops) while we confirm this baseline is solid;
+ * they'll come back in plain-View form once typing + suggestions are
+ * confirmed working.
+ */
 class MoneyKeyboardService : InputMethodService() {
 
-    private val lifecycleOwner = KeyboardLifecycleOwner()
     private val keyboardState = KeyboardState()
     private val undoRedoManager = UndoRedoManager()
     private lateinit var clipboardHistoryManager: ClipboardHistoryManager
 
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var aiPanelState by mutableStateOf<AiPanelState>(AiPanelState.Idle)
-    private var lastAiActionType: AiActionType = AiActionType.FIX_GRAMMAR
-    private var lastAiSourceText: String = ""
 
-    private var suggestions by mutableStateOf(listOf<String>())
-    private var recentEmojis by mutableStateOf(listOf<String>())
+    private lateinit var suggestionBarView: SuggestionBarView
+    private lateinit var keyboardView: MoneyKeyboardView
+
+    private var suggestions: List<String> = emptyList()
 
     private var lastSpaceTapTime = 0L
     private var lastShiftTapTime = 0L
@@ -48,77 +49,60 @@ class MoneyKeyboardService : InputMethodService() {
     private var spaceDragAccumulatorPx = 0f
     private val dragStepThresholdPx = 40f
 
-    private var isKeyboardLifecycleStarted = false
-
     override fun onCreate() {
         super.onCreate()
         clipboardHistoryManager = ClipboardHistoryManager(applicationContext)
         clipboardHistoryManager.startListening()
-        recentEmojis = Prefs.getRecentEmojis(applicationContext)
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
     }
 
     override fun onCreateInputView(): View {
-        val composeView = ComposeView(this)
-        lifecycleOwner.attachToView(composeView)
-        composeView.setContent {
-            Column {
-                EditToolbar(
-                    onUndo = { currentInputConnection?.let { undoRedoManager.undo(it) } },
-                    onRedo = { currentInputConnection?.let { undoRedoManager.redo(it) } },
-                    onSelectAll = { currentInputConnection?.performContextMenuAction(android.R.id.selectAll) },
-                    onCopy = { currentInputConnection?.performContextMenuAction(android.R.id.copy) },
-                    onCut = { currentInputConnection?.performContextMenuAction(android.R.id.cut) },
-                    onPaste = { currentInputConnection?.performContextMenuAction(android.R.id.paste) }
-                )
-
-                val panel = when {
-                    keyboardState.isEmojiPanelOpen -> KeyboardPanel.EMOJI
-                    keyboardState.isAiPanelOpen -> KeyboardPanel.AI
-                    else -> KeyboardPanel.KEYBOARD
-                }
-
-                AnimatedContent(
-                    targetState = panel,
-                    transitionSpec = { fadeIn() togetherWith fadeOut() },
-                    label = "keyboardPanelSwitch"
-                ) { targetPanel ->
-                    when (targetPanel) {
-                        KeyboardPanel.EMOJI -> {
-                            EmojiPanel(
-                                recentEmojis = recentEmojis,
-                                onEmojiTap = ::onEmojiTap,
-                                onClose = { keyboardState.isEmojiPanelOpen = false }
-                            )
-                        }
-                        KeyboardPanel.AI -> {
-                            AiPanel(
-                                state = aiPanelState,
-                                onAction = ::onAiAction,
-                                onInsert = ::onAiInsert,
-                                onRegenerate = ::onAiRegenerate,
-                                onDismiss = ::onAiDismiss
-                            )
-                        }
-                        KeyboardPanel.KEYBOARD -> {
-                            Column {
-                                SuggestionBar(
-                                    suggestions = suggestions,
-                                    onSuggestionTap = ::onSuggestionTap
-                                )
-                                MoneyKeyboard(
-                                    state = keyboardState,
-                                    onKey = ::handleKey,
-                                    onSpaceDrag = ::onSpaceDrag,
-                                    onSpaceDragEnd = ::onSpaceDragEnd
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
         }
-        return composeView
+
+        root.addView(buildToolbarRow())
+
+        suggestionBarView = SuggestionBarView(this).apply {
+            onSuggestionTap = ::onSuggestionTap
+        }
+        root.addView(suggestionBarView)
+
+        keyboardView = MoneyKeyboardView(this).apply {
+            onKey = ::handleKey
+            onSpaceDrag = ::onSpaceDrag
+            onSpaceDragEnd = ::onSpaceDragEnd
+        }
+        root.addView(keyboardView)
+
+        refreshUi()
+        return root
+    }
+
+    private fun buildToolbarRow(): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#12121A"))
+        }
+        val actions = listOf(
+            "Undo" to { currentInputConnection?.let { undoRedoManager.undo(it) } },
+            "Redo" to { currentInputConnection?.let { undoRedoManager.redo(it) } },
+            "Select All" to { currentInputConnection?.performContextMenuAction(android.R.id.selectAll); Unit },
+            "Copy" to { currentInputConnection?.performContextMenuAction(android.R.id.copy); Unit },
+            "Cut" to { currentInputConnection?.performContextMenuAction(android.R.id.cut); Unit },
+            "Paste" to { currentInputConnection?.performContextMenuAction(android.R.id.paste); Unit }
+        )
+        actions.forEach { (label, action) ->
+            row.addView(TextView(this).apply {
+                text = label
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setPadding(12, 16, 12, 16)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                setOnClickListener { action() }
+            })
+        }
+        return row
     }
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
@@ -127,30 +111,13 @@ class MoneyKeyboardService : InputMethodService() {
         keyboardState.isSensitiveField = computeIsSensitiveField(info)
         keyboardState.isEmojiPanelOpen = false
         keyboardState.isAiPanelOpen = false
-        aiPanelState = AiPanelState.Idle
         updateSuggestions()
-        // LifecycleRegistry requires adjacent-state transitions: CREATED -> STARTED
-        // -> RESUMED. Dispatching ON_RESUME directly from CREATED throws, which is
-        // exactly what was crashing the keyboard (but not MainActivity, since that
-        // uses Android's own correctly-ordered Activity lifecycle).
-        if (!isKeyboardLifecycleStarted) {
-            lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_START)
-            isKeyboardLifecycleStarted = true
-        }
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
-    }
-
-    override fun onFinishInputView(finishingInput: Boolean) {
-        super.onFinishInputView(finishingInput)
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
-        isKeyboardLifecycleStarted = false
+        refreshUi()
     }
 
     override fun onDestroy() {
         clipboardHistoryManager.stopListening()
         serviceScope.cancel()
-        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         super.onDestroy()
     }
 
@@ -196,7 +163,8 @@ class MoneyKeyboardService : InputMethodService() {
                     keyboardState.isShifted = !keyboardState.isShifted
                 }
                 lastShiftTapTime = now
-                return // no text changed, skip suggestion refresh
+                refreshUi()
+                return
             }
 
             KeyType.BACKSPACE -> {
@@ -238,117 +206,23 @@ class MoneyKeyboardService : InputMethodService() {
 
             KeyType.SYMBOLS -> {
                 keyboardState.isSymbolsMode = !keyboardState.isSymbolsMode
-                return // no text changed, skip suggestion refresh
+                refreshUi()
+                return
             }
 
             KeyType.EMOJI_TOGGLE -> {
-                keyboardState.isEmojiPanelOpen = !keyboardState.isEmojiPanelOpen
-                return // no text changed, skip suggestion refresh
+                // Temporarily disabled while we confirm the plain-View rebuild is stable.
+                return
             }
 
             KeyType.AI_TOGGLE -> {
-                if (keyboardState.isSensitiveField) return // AI disabled entirely in secure fields
-                keyboardState.isAiPanelOpen = !keyboardState.isAiPanelOpen
-                if (keyboardState.isAiPanelOpen) aiPanelState = AiPanelState.Idle
-                return // no text changed, skip suggestion refresh
-            }
-        }
-
-        updateSuggestions()
-    }
-
-    // ---- AI actions ----
-
-    private fun onAiAction(type: AiActionType) {
-        if (keyboardState.isSensitiveField) return // defense in depth
-        val ic = currentInputConnection ?: return
-        val fullText = getFullText(ic)
-        if (fullText.isBlank()) {
-            aiPanelState = AiPanelState.Failed("There's no text to work with yet.")
-            return
-        }
-        lastAiActionType = type
-        lastAiSourceText = fullText
-        runAiAction(type, fullText, forceFresh = false)
-    }
-
-    private fun onAiRegenerate() {
-        if (lastAiSourceText.isNotBlank()) {
-            runAiAction(lastAiActionType, lastAiSourceText, forceFresh = true)
-        }
-    }
-
-    private fun runAiAction(type: AiActionType, sourceText: String, forceFresh: Boolean) {
-        if (!forceFresh) {
-            val cached = AiResponseCache.get(type, sourceText)
-            if (cached != null) {
-                aiPanelState = AiPanelState.Ready(cached)
+                // Temporarily disabled while we confirm the plain-View rebuild is stable.
                 return
             }
         }
 
-        if (!NetworkUtils.isOnline(applicationContext)) {
-            aiPanelState = AiPanelState.Failed(
-                "No internet connection. AI actions need Gemini online \u2014 typing, suggestions, and emoji still work fine offline."
-            )
-            return
-        }
-
-        aiPanelState = AiPanelState.Loading
-        val targetLanguage = if (type == AiActionType.TRANSLATE) "Twi" else null
-        val (systemPrompt, wrappedText) = AiActions.buildPrompt(type, sourceText, targetLanguage)
-        val provider: AiProvider = GeminiProvider(Prefs.getApiKey(applicationContext))
-        serviceScope.launch {
-            val result = provider.generate(systemPrompt, wrappedText)
-            result.onSuccess { AiResponseCache.put(type, sourceText, it) }
-            aiPanelState = result.fold(
-                onSuccess = { AiPanelState.Ready(it) },
-                onFailure = { AiPanelState.Failed(it.message ?: "Unknown error") }
-            )
-        }
-    }
-
-    private fun onAiInsert(resultText: String) {
-        val ic = currentInputConnection ?: return
-        val oldText = lastAiSourceText
-        // Replace the whole field's text with the AI result, bypassing the
-        // normal per-key path so autocorrect can't immediately mangle it.
-        // Reply-suggestion is different: it's a suggested response, not an edit
-        // of the existing text, so it's appended instead of replacing anything.
-        if (lastAiActionType == AiActionType.REPLY_SUGGESTION) {
-            val pos = cursorPosition(ic)
-            ic.commitText(resultText, 1)
-            undoRedoManager.recordInsert(pos, resultText)
-        } else {
-            ic.setSelection(0, oldText.length)
-            ic.commitText(resultText, 1)
-            undoRedoManager.recordReplace(0, oldText, resultText)
-        }
-
-        keyboardState.isAiPanelOpen = false
-        aiPanelState = AiPanelState.Idle
         updateSuggestions()
-    }
-
-    private fun onAiDismiss() {
-        aiPanelState = AiPanelState.Idle
-        keyboardState.isAiPanelOpen = false
-    }
-
-    private fun getFullText(ic: InputConnection): String {
-        val request = ExtractedTextRequest().apply { hintMaxChars = 10000 }
-        return ic.getExtractedText(request, 0)?.text?.toString() ?: ""
-    }
-
-    // ---- Emoji / suggestions ----
-
-    private fun onEmojiTap(emoji: String) {
-        val ic = currentInputConnection ?: return
-        val pos = cursorPosition(ic)
-        ic.commitText(emoji, 1)
-        undoRedoManager.recordInsert(pos, emoji)
-        Prefs.addRecentEmoji(applicationContext, emoji)
-        recentEmojis = Prefs.getRecentEmojis(applicationContext)
+        refreshUi()
     }
 
     private fun onSuggestionTap(word: String) {
@@ -369,6 +243,7 @@ class MoneyKeyboardService : InputMethodService() {
         }
         keyboardState.isShifted = false
         updateSuggestions()
+        refreshUi()
     }
 
     private fun updateSuggestions() {
@@ -419,6 +294,7 @@ class MoneyKeyboardService : InputMethodService() {
     private fun onSpaceDragEnd() {
         spaceDragAccumulatorPx = 0f
         updateSuggestions()
+        refreshUi()
     }
 
     private fun moveCursor(direction: Int) {
@@ -431,5 +307,11 @@ class MoneyKeyboardService : InputMethodService() {
     private fun cursorPosition(ic: InputConnection): Int {
         val extractedText = ic.getExtractedText(ExtractedTextRequest(), 0) ?: return 0
         return extractedText.selectionStart
+    }
+
+    /** Call after any state change to redraw. No Compose recomposition anymore, so this is manual. */
+    private fun refreshUi() {
+        keyboardView.render(keyboardState)
+        suggestionBarView.render(if (keyboardState.isSensitiveField) emptyList() else suggestions)
     }
 }
