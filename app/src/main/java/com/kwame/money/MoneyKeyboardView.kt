@@ -97,6 +97,13 @@ class MoneyKeyboardView(context: Context) : LinearLayout(context) {
             }
             setPadding(0, 44, 0, 44)
 
+            // Every key dispatch is posted (deferred to the next message-loop tick)
+            // rather than run synchronously inside the touch/click callback. handleKey()
+            // triggers render(), which tears down and rebuilds this whole view tree
+            // (removeAllViews() + addView()) — doing that WHILE Android is still mid-way
+            // through dispatching the current touch event on one of these same child
+            // views is a known source of crashes. Posting lets the touch dispatch fully
+            // finish first.
             if (key.keyType == KeyType.SPACE) {
                 var lastX = 0f
                 var totalDrag = 0f
@@ -111,24 +118,27 @@ class MoneyKeyboardView(context: Context) : LinearLayout(context) {
                             val delta = event.rawX - lastX
                             lastX = event.rawX
                             totalDrag += abs(delta)
-                            onSpaceDrag?.invoke(delta)
+                            onSpaceDrag?.invoke(delta) // cursor-only, no view-tree change: safe to run inline
                             true
                         }
                         MotionEvent.ACTION_UP -> {
-                            onSpaceDragEnd?.invoke()
-                            // Small total movement = it was a tap, not a drag: insert a space.
-                            if (totalDrag < 24f) onKey?.invoke(key)
+                            val wasTap = totalDrag < 24f
+                            post {
+                                onSpaceDragEnd?.invoke()
+                                // Small total movement = it was a tap, not a drag: insert a space.
+                                if (wasTap) onKey?.invoke(key)
+                            }
                             true
                         }
                         MotionEvent.ACTION_CANCEL -> {
-                            onSpaceDragEnd?.invoke()
+                            post { onSpaceDragEnd?.invoke() }
                             true
                         }
                         else -> false
                     }
                 }
             } else {
-                setOnClickListener { onKey?.invoke(key) }
+                setOnClickListener { post { onKey?.invoke(key) } }
             }
         }
     }
