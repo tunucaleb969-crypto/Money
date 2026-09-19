@@ -48,6 +48,8 @@ class MoneyKeyboardService : InputMethodService() {
     private var spaceDragAccumulatorPx = 0f
     private val dragStepThresholdPx = 40f
 
+    private var isKeyboardLifecycleStarted = false
+
     override fun onCreate() {
         super.onCreate()
         clipboardHistoryManager = ClipboardHistoryManager(applicationContext)
@@ -127,12 +129,22 @@ class MoneyKeyboardService : InputMethodService() {
         keyboardState.isAiPanelOpen = false
         aiPanelState = AiPanelState.Idle
         updateSuggestions()
+        // LifecycleRegistry requires adjacent-state transitions: CREATED -> STARTED
+        // -> RESUMED. Dispatching ON_RESUME directly from CREATED throws, which is
+        // exactly what was crashing the keyboard (but not MainActivity, since that
+        // uses Android's own correctly-ordered Activity lifecycle).
+        if (!isKeyboardLifecycleStarted) {
+            lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_START)
+            isKeyboardLifecycleStarted = true
+        }
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
         super.onFinishInputView(finishingInput)
         lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        lifecycleOwner.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+        isKeyboardLifecycleStarted = false
     }
 
     override fun onDestroy() {
